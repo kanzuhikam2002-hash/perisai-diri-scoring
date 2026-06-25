@@ -34,6 +34,7 @@ export default function TV() {
       .from('nilai_tanding')
       .select('*')
       .eq('pertandingan_id', pilihan.id)
+      .eq('ronde', ronde)
 
     let merah = 0, biru = 0
     data?.forEach(d => {
@@ -49,8 +50,12 @@ export default function TV() {
       <h1 className="text-3xl font-bold text-red-400 mb-6">📺 Pilih Pertandingan</h1>
       {pertandingan.map(p => (
         <button key={p.id} onClick={() => setPilihan(p)} className="w-full bg-gray-800 p-4 rounded-xl mb-3 text-left">
-          <p className="font-bold">{p.kategori}</p>
-          <p><span className="text-red-400">{p.peserta_merah}</span> vs <span className="text-blue-400">{p.peserta_biru}</span></p>
+          <p className="font-bold text-yellow-400">{p.kategori}</p>
+          <p className="mt-1">
+            <span className="font-bold text-white bg-red-700 px-2 py-0.5 rounded mr-2">🔴 {p.peserta_merah}</span>
+            <span className="text-gray-400">vs</span>
+            <span className="font-bold text-white bg-blue-700 px-2 py-0.5 rounded ml-2">🔵 {p.peserta_biru}</span>
+          </p>
         </button>
       ))}
     </main>
@@ -58,28 +63,48 @@ export default function TV() {
 
   return (
     <main className="min-h-screen bg-black text-white flex flex-col">
+      {/* Header */}
       <div className="text-center py-4 bg-gray-900">
+        <button onClick={() => setPilihan(null)} className="float-left ml-4 text-gray-400 hover:text-white text-sm">← Ganti</button>
         <h1 className="text-2xl font-bold text-yellow-400">⚔️ PERISAI DIRI</h1>
-        <p className="text-gray-400">{pilihan.kategori}</p>
+        <p className="text-gray-400 text-sm">{pilihan.kategori}</p>
         <div className="flex justify-center gap-3 mt-2">
           {[1, 2, 3].map(r => (
-            <button key={r} onClick={() => setRonde(r)} className={`px-4 py-1 rounded-lg font-bold ${ronde === r ? 'bg-yellow-500 text-black' : 'bg-gray-700'}`}>
+            <button key={r} onClick={() => setRonde(r)}
+              className={`px-4 py-1 rounded-lg font-bold ${ronde === r ? 'bg-yellow-500 text-black' : 'bg-gray-700'}`}>
               Ronde {r}
             </button>
           ))}
         </div>
       </div>
+
+      {/* Scoreboard */}
       <div className="flex flex-1">
-        <div className="flex-1 bg-red-900 flex flex-col items-center justify-center">
-          <p className="text-2xl font-bold text-red-300 mb-4">{pilihan.peserta_merah}</p>
+        {/* Sudut Merah */}
+        <div className="flex-1 bg-red-900 flex flex-col items-center justify-center gap-4">
+          <div className="bg-red-700 px-6 py-3 rounded-2xl text-center">
+            <p className="text-xs text-red-200 font-semibold tracking-widest uppercase mb-1">Sudut Merah</p>
+            <p className="text-3xl font-extrabold text-white">🔴 {pilihan.peserta_merah}</p>
+            {pilihan.kontingen_merah && (
+              <p className="text-red-200 text-sm mt-1">{pilihan.kontingen_merah}</p>
+            )}
+          </div>
           <p className="text-9xl font-black text-white">{skor.merah}</p>
-          <p className="text-red-400 mt-2">MERAH</p>
         </div>
+
+        {/* Divider */}
         <div className="w-1 bg-yellow-400"></div>
-        <div className="flex-1 bg-blue-900 flex flex-col items-center justify-center">
-          <p className="text-2xl font-bold text-blue-300 mb-4">{pilihan.peserta_biru}</p>
+
+        {/* Sudut Biru */}
+        <div className="flex-1 bg-blue-900 flex flex-col items-center justify-center gap-4">
+          <div className="bg-blue-700 px-6 py-3 rounded-2xl text-center">
+            <p className="text-xs text-blue-200 font-semibold tracking-widest uppercase mb-1">Sudut Biru</p>
+            <p className="text-3xl font-extrabold text-white">🔵 {pilihan.peserta_biru}</p>
+            {pilihan.kontingen_biru && (
+              <p className="text-blue-200 text-sm mt-1">{pilihan.kontingen_biru}</p>
+            )}
+          </div>
           <p className="text-9xl font-black text-white">{skor.biru}</p>
-          <p className="text-blue-400 mt-2">BIRU</p>
         </div>
       </div>
     </main>
