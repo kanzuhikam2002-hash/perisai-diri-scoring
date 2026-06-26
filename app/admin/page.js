@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { supabase } from '../supabase'
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
@@ -8,25 +8,16 @@ const USIA_OPTIONS = ['Dini 1', 'Dini 2', 'Pra Remaja', 'Remaja', 'Dewasa']
 const KELAS_OPTIONS = ['Under A', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'Eksibisi']
 const GENDER_OPTIONS = ['Putra', 'Putri']
 
-function generateDeviceId() {
-  if (typeof window === 'undefined') return ''
-  let id = localStorage.getItem('admin_device_id')
-  if (!id) {
-    id = crypto.randomUUID()
-    localStorage.setItem('admin_device_id', id)
-  }
-  return id
-}
-
 export default function Admin() {
   const [tab, setTab] = useState('pertandingan') // 'pertandingan' | 'peserta' | 'bagan'
+  const [isAuthed, setIsAuthed] = useState(false)
+  const [passwordInput, setPasswordInput] = useState('')
   const [pertandingan, setPertandingan] = useState([])
   const [pesertaList, setPesertaList] = useState([])
   const [kontingenList, setKontingenList] = useState([])
-  const [deviceLocked, setDeviceLocked] = useState(false)
-  const [myDevice, setMyDevice] = useState(false)
-  const deviceId = useRef(generateDeviceId())
   const [ping, setPing] = useState(null)
+  
+  const PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD || 'admin123'
 
   // Bracket/Bagan states
   const [bracketList, setBracketList] = useState([])
@@ -62,46 +53,16 @@ export default function Admin() {
     return () => clearInterval(interval)
   }, [])
 
-  // Lock admin 1 device
-  useEffect(() => {
-    checkAdminLock()
-    const ch = supabase.channel('sesi_admin_ch')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'sesi_dewan' }, () => checkAdminLock())
-      .subscribe()
-    return () => supabase.removeChannel(ch)
-  }, [])
-
-  async function checkAdminLock() {
-    // Pakai kolom terpisah di sesi_dewan untuk admin, atau buat row id=2
-    const { data } = await supabase.from('sesi_dewan').select('*').eq('id', 2).single()
-    if (!data) {
-      // Insert row admin kalau belum ada
-      await supabase.from('sesi_dewan').insert({ id: 2, device_id: deviceId.current })
-      setMyDevice(true)
-      setDeviceLocked(false)
-      return
-    }
-    if (!data.device_id) {
-      await supabase.from('sesi_dewan').update({ device_id: deviceId.current, updated_at: new Date().toISOString() }).eq('id', 2)
-      setMyDevice(true)
-      setDeviceLocked(false)
-    } else if (data.device_id === deviceId.current) {
-      setMyDevice(true)
-      setDeviceLocked(false)
+  // Password auth
+  function handlePasswordSubmit() {
+    if (passwordInput === PASSWORD) {
+      setIsAuthed(true)
+      setPasswordInput('')
     } else {
-      setMyDevice(false)
-      setDeviceLocked(true)
+      alert('Password salah!')
+      setPasswordInput('')
     }
   }
-
-  useEffect(() => {
-    if (!myDevice) return
-    const cleanup = async () => {
-      await supabase.from('sesi_dewan').update({ device_id: null }).eq('id', 2)
-    }
-    window.addEventListener('beforeunload', cleanup)
-    return () => { window.removeEventListener('beforeunload', cleanup) }
-  }, [myDevice])
 
   useEffect(() => {
     fetchAll()
@@ -492,14 +453,32 @@ export default function Admin() {
     ? pesertaList.filter(p => p.kategori === filterKategori)
     : pesertaList
 
-  // ── Device locked
-  if (deviceLocked) return (
-    <main className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center gap-4 p-6">
-      <div className="text-6xl">🔒</div>
-      <h1 className="text-2xl font-bold text-red-400">Akses Ditolak</h1>
-      <p className="text-gray-400 text-center">Admin sudah login di device lain.<br />Hanya 1 device yang diizinkan.</p>
-    </main>
-  )
+  // Password screen
+  if (!isAuthed) {
+    return (
+      <main className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center gap-4 p-6">
+        <div className="text-6xl mb-4">🔐</div>
+        <h1 className="text-2xl font-bold">Admin Panel</h1>
+        <p className="text-gray-400 text-center">Masukkan password untuk melanjutkan</p>
+        <div className="w-full max-w-xs">
+          <input
+            type="password"
+            value={passwordInput}
+            onChange={e => setPasswordInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handlePasswordSubmit()}
+            placeholder="Masukkan password..."
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-center text-xl tracking-widest mb-3"
+            autoFocus
+          />
+          <button
+            onClick={handlePasswordSubmit}
+            className="w-full bg-purple-600 hover:bg-purple-700 py-3 rounded-lg font-bold transition-all">
+            ✅ Login
+          </button>
+        </div>
+      </main>
+    )
+  }
 
   return (
     <main className="min-h-screen bg-gray-900 text-white pb-10">
