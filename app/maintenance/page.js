@@ -12,7 +12,7 @@ export default function MaintenancePage() {
       const res = await fetch('/api/unlock', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ password: password.trim() }),
         credentials: 'same-origin',
       })
 
