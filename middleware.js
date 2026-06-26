@@ -1,6 +1,12 @@
 import { NextResponse } from 'next/server'
 
+const maintenanceEnabled = process.env.MAINTENANCE_MODE !== 'off'
+
 export function middleware(req) {
+  if (!maintenanceEnabled) {
+    return NextResponse.next()
+  }
+
   const { pathname } = req.nextUrl
 
   if (
