@@ -1,8 +1,8 @@
 'use client'
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../supabase'
 
-const COOLDOWN_MS = 1500 // anti spam: 1.5 detik per tombol
+const COOLDOWN_MS = 1500
 
 function generateDeviceId() {
   if (typeof window === 'undefined') return ''
@@ -15,13 +15,13 @@ function generateDeviceId() {
 }
 
 export default function Juri() {
-  const [sesi, setSesi] = useState(null) // { pertandingan_id, ronde, status }
+  const [sesi, setSesi] = useState(null)
   const [pertandingan, setPertandingan] = useState(null)
   const [nomorJuri, setNomorJuri] = useState(null)
-  const [slotTerpakai, setSlotTerpakai] = useState([]) // [1, 2, 3] yang sudah dipakai
+  const [slotTerpakai, setSlotTerpakai] = useState([])
   const [loading, setLoading] = useState(true)
   const [cooldown, setCooldown] = useState({ merah: false, biru: false })
-  const [feedback, setFeedback] = useState(null) // { pesan, tipe: 'sukses'|'error' }
+  const [feedback, setFeedback] = useState(null)
   const deviceId = useRef(generateDeviceId())
   const lastInputTime = useRef({})
 
@@ -33,6 +33,13 @@ export default function Juri() {
       .subscribe()
     return () => supabase.removeChannel(ch)
   }, [])
+
+  // Reset nomorJuri HANYA kalau pertandingan_id beneran hilang
+  useEffect(() => {
+    if (!sesi?.pertandingan_id) {
+      setNomorJuri(null)
+    }
+  }, [sesi?.pertandingan_id])
 
   // Subscribe slot juri realtime
   useEffect(() => {
@@ -47,8 +54,7 @@ export default function Juri() {
   useEffect(() => {
     if (!nomorJuri) return
     const cleanup = async () => {
-      await supabase.from('sesi_juri').delete()
-        .eq('device_id', deviceId.current)
+      await supabase.from('sesi_juri').delete().eq('device_id', deviceId.current)
     }
     window.addEventListener('beforeunload', cleanup)
     return () => {
@@ -66,7 +72,7 @@ export default function Juri() {
       setPertandingan(p || null)
     } else {
       setPertandingan(null)
-      setNomorJuri(null)
+      // nomorJuri TIDAK di-reset di sini, dihandle useEffect di atas
     }
     setLoading(false)
   }
@@ -76,18 +82,14 @@ export default function Juri() {
     const { data } = await supabase.from('sesi_juri')
       .select('*')
       .eq('pertandingan_id', sesi.pertandingan_id)
-    // Cek apakah device ini sudah punya slot
     const mySlot = data?.find(d => d.device_id === deviceId.current)
     if (mySlot) setNomorJuri(mySlot.nomor_juri)
     setSlotTerpakai(data?.map(d => d.nomor_juri) || [])
   }
 
   async function pilihJuri(n) {
-    // Cek apakah slot sudah terpakai
     if (slotTerpakai.includes(n)) return
-    // Hapus slot lama device ini dulu kalau ada
     await supabase.from('sesi_juri').delete().eq('device_id', deviceId.current)
-    // Ambil slot baru
     const { error } = await supabase.from('sesi_juri').insert({
       pertandingan_id: sesi.pertandingan_id,
       nomor_juri: n,
@@ -97,7 +99,6 @@ export default function Juri() {
   }
 
   async function tambahNilai(peserta, jenis) {
-    // Anti spam cooldown
     const key = `${peserta}_${jenis}`
     const now = Date.now()
     if (lastInputTime.current[key] && (now - lastInputTime.current[key]) < COOLDOWN_MS) {
@@ -107,7 +108,6 @@ export default function Juri() {
     }
     lastInputTime.current[key] = now
 
-    // Cek status sesi
     if (sesi?.status !== 'aktif') {
       setFeedback({ pesan: '🚫 Pertandingan belum dimulai.', tipe: 'error' })
       setTimeout(() => setFeedback(null), 2000)
@@ -143,7 +143,6 @@ export default function Juri() {
       })
     }
 
-    // Log ke log_nilai
     await supabase.from('log_nilai').insert({
       pertandingan_id: pertandingan.id,
       ronde,
@@ -167,7 +166,6 @@ export default function Juri() {
     </main>
   )
 
-  // Menunggu dewan pilih partai
   if (!sesi?.pertandingan_id || !pertandingan) return (
     <main className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center gap-4 p-6">
       <div className="text-6xl animate-bounce">⏳</div>
@@ -176,7 +174,6 @@ export default function Juri() {
     </main>
   )
 
-  // Pertandingan selesai
   if (sesi?.status === 'selesai') return (
     <main className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center gap-4 p-6">
       <div className="text-6xl animate-bounce">⏳</div>
@@ -185,7 +182,6 @@ export default function Juri() {
     </main>
   )
 
-  // Pilih nomor juri
   if (!nomorJuri) return (
     <main className="min-h-screen bg-gray-900 text-white p-6 flex flex-col items-center justify-center gap-4">
       <h1 className="text-2xl font-bold text-white mb-2">Kamu Juri Berapa?</h1>
@@ -212,11 +208,9 @@ export default function Juri() {
     </main>
   )
 
-  // Main scoring UI
   const ronde = sesi.ronde
   return (
     <main className="min-h-screen bg-gray-900 text-white p-4">
-      {/* Header */}
       <div className="flex items-center justify-between mb-3">
         <button onClick={async () => {
           await supabase.from('sesi_juri').delete().eq('device_id', deviceId.current)
@@ -232,7 +226,6 @@ export default function Juri() {
 
       <p className="text-gray-400 text-center text-sm mb-4">{pertandingan.kategori}</p>
 
-      {/* Feedback toast */}
       {feedback && (
         <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-6 py-3 rounded-xl font-bold text-white shadow-lg transition-all
           ${feedback.tipe === 'sukses' ? 'bg-green-600' : 'bg-red-600'}`}>
@@ -240,9 +233,7 @@ export default function Juri() {
         </div>
       )}
 
-      {/* Scoring buttons */}
       <div className="grid grid-cols-2 gap-4">
-        {/* Merah */}
         <div className="bg-red-900 border-2 border-red-500 p-4 rounded-xl text-center">
           <h2 className="text-base font-extrabold text-white bg-red-600 rounded-lg py-2 px-3 mb-4">
             🔴 {pertandingan.peserta_merah}
@@ -261,7 +252,6 @@ export default function Juri() {
           </button>
         </div>
 
-        {/* Biru */}
         <div className="bg-blue-900 border-2 border-blue-500 p-4 rounded-xl text-center">
           <h2 className="text-base font-extrabold text-white bg-blue-600 rounded-lg py-2 px-3 mb-4">
             🔵 {pertandingan.peserta_biru}
