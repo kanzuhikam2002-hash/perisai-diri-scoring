@@ -30,6 +30,12 @@ export default function TV() {
   const [bracketMatches, setBracketMatches] = useState([])
   const [ping, setPing] = useState(null)
 
+  // Ref ini selalu sinkron dengan pertandingan_id TERBARU dari sesi_aktif.
+  // Dipakai untuk membuang hasil fetch yang datang "basi" (telat),
+  // supaya data lama tidak menimpa data baru saat Dewan ganti partai cepat.
+  const pertandinganIdRef = useRef(null)
+  const seqRef = useRef(0)
+
   // Ping
   useEffect(() => {
     const interval = setInterval(async () => {
@@ -40,62 +46,80 @@ export default function TV() {
     return () => clearInterval(interval)
   }, [])
 
-  // Subscribe sesi_aktif
+  // Subscribe sesi_aktif — pakai payload langsung, bukan re-fetch,
+  // supaya urutan event selalu sesuai urutan commit di database
   useEffect(() => {
-    fetchSesi()
+    fetchSesiAwal()
     const ch = supabase.channel('tv_sesi')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'sesi_aktif' }, () => fetchSesi())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sesi_aktif' }, (payload) => {
+        applySesi(payload.new)
+      })
       .subscribe()
     return () => supabase.removeChannel(ch)
   }, [])
 
-  // Subscribe nilai_tanding
+  // Subscribe nilai_tanding — channel unik per pertandingan
   useEffect(() => {
     if (!pertandingan) return
     fetchNilai()
-    const ch = supabase.channel('tv_nilai')
+    const ch = supabase.channel(`tv_nilai_${pertandingan.id}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'nilai_tanding' }, () => fetchNilai())
       .subscribe()
     return () => supabase.removeChannel(ch)
-  }, [pertandingan])
+  }, [pertandingan?.id])
 
-  // Subscribe bracket_match (untuk tampilan bagan setelah selesai)
+  // Subscribe bracket_match — channel unik per bracket
   useEffect(() => {
     if (!bracket) return
     fetchBracketMatches()
-    const ch = supabase.channel('tv_bracket')
+    const ch = supabase.channel(`tv_bracket_${bracket.id}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'bracket_match' }, () => fetchBracketMatches())
       .subscribe()
     return () => supabase.removeChannel(ch)
-  }, [bracket])
+  }, [bracket?.id])
 
-  async function fetchSesi() {
-    const { data: s } = await supabase.from('sesi_aktif').select('*').limit(1).single()
+  async function fetchSesiAwal() {
+    const { data: s } = await supabase.from('sesi_aktif').select('*').eq('id', 1).single()
+    await applySesi(s)
+  }
+
+  // Dipanggil setiap kali ada perubahan sesi_aktif (dari realtime payload ATAU fetch awal).
+  // Sequence guard: kalau ada applySesi() lain yang lebih baru sudah mulai
+  // berjalan sebelum query pertandingan/bracket ini selesai, hasil ini dibuang.
+  async function applySesi(s) {
+    const mySeq = ++seqRef.current
+    pertandinganIdRef.current = s?.pertandingan_id ?? null
     setSesi(s)
 
-    if (s?.pertandingan_id) {
-      const { data: p } = await supabase.from('pertandingan').select('*').eq('id', s.pertandingan_id).single()
-      setPertandingan(p || null)
-
-      // Kalau selesai, load bracket kategori ini
-      if (s.status === 'selesai' && p?.kategori) {
-        const { data: b } = await supabase.from('bracket').select('*').eq('kategori', p.kategori).single()
-        setBracket(b || null)
-      } else {
-        setBracket(null)
-      }
-    } else {
+    if (!s?.pertandingan_id) {
+      if (mySeq !== seqRef.current) return
       setPertandingan(null)
+      setBracket(null)
+      return
+    }
+
+    const { data: p } = await supabase.from('pertandingan').select('*').eq('id', s.pertandingan_id).single()
+    if (mySeq !== seqRef.current) return // ada update lebih baru, buang hasil ini
+    setPertandingan(p || null)
+
+    if (s.status === 'selesai' && p?.kategori) {
+      const { data: b } = await supabase.from('bracket').select('*').eq('kategori', p.kategori).single()
+      if (mySeq !== seqRef.current) return
+      setBracket(b || null)
+    } else {
       setBracket(null)
     }
   }
 
   async function fetchNilai() {
     if (!pertandingan) return
+    const pid = pertandingan.id
     const { data } = await supabase
       .from('nilai_tanding')
       .select('*')
-      .eq('pertandingan_id', pertandingan.id)
+      .eq('pertandingan_id', pid)
+    // Buang hasil basi kalau pertandingan sudah berganti lagi sejak query dimulai
+    if (pertandinganIdRef.current !== pid) return
     setNilaiData(data || [])
   }
 

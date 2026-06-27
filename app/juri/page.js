@@ -25,11 +25,19 @@ export default function Juri() {
   const deviceId = useRef(generateDeviceId())
   const lastInputTime = useRef({})
 
+  // Ref ini selalu sinkron dengan pertandingan_id TERBARU.
+  // Dipakai untuk membuang hasil fetch yang datang "basi" (telat),
+  // supaya data lama tidak menimpa data baru.
+  const pertandinganIdRef = useRef(null)
+  const seqRef = useRef(0)
+
   // Subscribe sesi_aktif realtime
   useEffect(() => {
-    fetchSesi()
+    fetchSesiAwal()
     const ch = supabase.channel('sesi_aktif_juri')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'sesi_aktif' }, () => fetchSesi())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sesi_aktif' }, (payload) => {
+        applySesi(payload.new)
+      })
       .subscribe()
     return () => supabase.removeChannel(ch)
   }, [])
@@ -41,14 +49,14 @@ export default function Juri() {
     }
   }, [sesi?.pertandingan_id])
 
-  // Subscribe slot juri realtime
+  // Subscribe slot juri realtime — channel unik per pertandingan
   useEffect(() => {
     fetchSlot()
-    const ch = supabase.channel('sesi_juri_slot')
+    const ch = supabase.channel(`sesi_juri_slot_${sesi?.pertandingan_id ?? 'none'}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'sesi_juri' }, () => fetchSlot())
       .subscribe()
     return () => supabase.removeChannel(ch)
-  }, [sesi])
+  }, [sesi?.pertandingan_id])
 
   // Cleanup slot saat close/refresh
   useEffect(() => {
@@ -63,25 +71,40 @@ export default function Juri() {
     }
   }, [nomorJuri])
 
-  async function fetchSesi() {
+  // Fetch awal saat mount
+  async function fetchSesiAwal() {
     setLoading(true)
-    const { data: s } = await supabase.from('sesi_aktif').select('*').limit(1).single()
-    setSesi(s)
-    if (s?.pertandingan_id) {
-      const { data: p } = await supabase.from('pertandingan').select('*').eq('id', s.pertandingan_id).single()
-      setPertandingan(p || null)
-    } else {
-      setPertandingan(null)
-      // nomorJuri TIDAK di-reset di sini, dihandle useEffect di atas
-    }
+    const { data: s } = await supabase.from('sesi_aktif').select('*').eq('id', 1).single()
+    await applySesi(s)
     setLoading(false)
   }
 
+  // Dipanggil setiap kali ada perubahan sesi_aktif (dari realtime payload ATAU fetch awal).
+  // Pakai sequence guard: kalau ada applySesi() lain yang lebih baru sudah
+  // mulai berjalan sebelum query pertandingan ini selesai, hasil ini dibuang.
+  async function applySesi(s) {
+    const mySeq = ++seqRef.current
+    pertandinganIdRef.current = s?.pertandingan_id ?? null
+    setSesi(s)
+
+    if (s?.pertandingan_id) {
+      const { data: p } = await supabase.from('pertandingan').select('*').eq('id', s.pertandingan_id).single()
+      if (mySeq !== seqRef.current) return // ada update lebih baru, buang hasil ini
+      setPertandingan(p || null)
+    } else {
+      if (mySeq !== seqRef.current) return
+      setPertandingan(null)
+    }
+  }
+
   async function fetchSlot() {
-    if (!sesi?.pertandingan_id) return
+    const pid = pertandinganIdRef.current
+    if (!pid) return
     const { data } = await supabase.from('sesi_juri')
       .select('*')
-      .eq('pertandingan_id', sesi.pertandingan_id)
+      .eq('pertandingan_id', pid)
+    // Buang hasil basi kalau pertandingan sudah berganti lagi sejak query dimulai
+    if (pertandinganIdRef.current !== pid) return
     const mySlot = data?.find(d => d.device_id === deviceId.current)
     if (mySlot) setNomorJuri(mySlot.nomor_juri)
     setSlotTerpakai(data?.map(d => d.nomor_juri) || [])

@@ -5,29 +5,21 @@ import { supabase } from '../supabase'
 const WINDOW_MS = 2000 // 2 detik window validasi
 
 function hitungValidasi(logs) {
-  // Group by ronde + peserta, sort by waktu
-  // Cek apakah ada 2+ juri dalam 2 detik dengan jenis sama
   const hasil = []
-
-  // Group per ronde
   const byRonde = {}
   logs.forEach(l => {
-    if (l.juri === 0) return // skip dewan
+    if (l.juri === 0) return
     const key = `${l.ronde}_${l.peserta}`
     if (!byRonde[key]) byRonde[key] = []
     byRonde[key].push(l)
   })
 
   Object.entries(byRonde).forEach(([key, entries]) => {
-    // Sort by created_at
     const sorted = [...entries].sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
-
-    // Sliding window: cari grup yang masuk dalam 2 detik
     let i = 0
     while (i < sorted.length) {
       const base = new Date(sorted[i].created_at)
       const grup = [sorted[i]]
-
       let j = i + 1
       while (j < sorted.length) {
         const diff = new Date(sorted[j].created_at) - base
@@ -36,17 +28,13 @@ function hitungValidasi(logs) {
           j++
         } else break
       }
-
       if (grup.length >= 2) {
-        // Cek semua jenis sama
         const jenisSama = grup.every(g => g.jenis === grup[0].jenis)
-        // Cek juri unik
         const juriUnik = new Set(grup.map(g => g.juri)).size
         const status = jenisSama && juriUnik >= 2 ? 'sah' : 'hangus'
         grup.forEach(g => hasil.push({ ...g, status }))
         i = j
       } else {
-        // Hanya 1 juri dalam window ini
         hasil.push({ ...sorted[i], status: 'tidak_sah' })
         i++
       }
@@ -65,10 +53,9 @@ export default function Dewan() {
   const [isAuthed, setIsAuthed] = useState(false)
   const [passwordInput, setPasswordInput] = useState('')
   const [ping, setPing] = useState(null)
-  
+
   const PASSWORD = process.env.NEXT_PUBLIC_DEWAN_PASSWORD || '1234'
 
-  // Ping indikator
   useEffect(() => {
     const interval = setInterval(async () => {
       const t = Date.now()
@@ -78,7 +65,6 @@ export default function Dewan() {
     return () => clearInterval(interval)
   }, [])
 
-  // Password auth
   function handlePasswordSubmit() {
     if (passwordInput === PASSWORD) {
       setIsAuthed(true)
@@ -97,14 +83,14 @@ export default function Dewan() {
   useEffect(() => {
     if (!pilihan) return
     fetchLog()
-    const ch = supabase.channel('log_nilai_dewan')
+    const ch = supabase.channel(`log_nilai_dewan_${pilihan.id}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'log_nilai' }, () => fetchLog())
       .subscribe()
     return () => supabase.removeChannel(ch)
-  }, [pilihan, sesi?.ronde])
+  }, [pilihan?.id, sesi?.ronde])
 
   async function fetchSesi() {
-    const { data } = await supabase.from('sesi_aktif').select('*').limit(1).single()
+    const { data } = await supabase.from('sesi_aktif').select('*').eq('id', 1).single()
     setSesi(data)
   }
 
@@ -123,7 +109,6 @@ export default function Dewan() {
       .order('created_at', { ascending: true })
     setLog(data || [])
 
-    // Log dewan (bantingan/pelanggaran)
     const { data: d } = await supabase
       .from('log_nilai')
       .select('*')
@@ -134,16 +119,18 @@ export default function Dewan() {
     setLogDewan(d || [])
   }
 
+  // Update optimistic langsung (tidak pakai setTimeout+refetch lagi),
+  // supaya tidak ada window race kalau klik cepat berturut-turut.
   async function pilihPertandingan(p) {
     setPilihan(p)
+    const updatedAt = new Date().toISOString()
+    setSesi(prev => ({ ...(prev || {}), pertandingan_id: p.id, ronde: 1, status: 'aktif', updated_at: updatedAt }))
     await supabase.from('sesi_aktif').update({
       pertandingan_id: p.id,
       ronde: 1,
       status: 'aktif',
-      updated_at: new Date().toISOString()
+      updated_at: updatedAt
     }).eq('id', 1)
-    // Delay kecil untuk ensure realtime propagation
-    setTimeout(() => fetchSesi(), 200)
   }
 
   async function gantiRonde(r) {
@@ -165,11 +152,16 @@ export default function Dewan() {
 
   async function mulaiLagi() {
     setPilihan(null)
+    if (pilihan?.id) {
+      await supabase.from('sesi_juri').delete().eq('pertandingan_id', pilihan.id)
+    }
+    const updatedAt = new Date().toISOString()
+    setSesi(prev => ({ ...(prev || {}), pertandingan_id: null, ronde: 1, status: 'menunggu', updated_at: updatedAt }))
     await supabase.from('sesi_aktif').update({
       pertandingan_id: null,
       ronde: 1,
       status: 'menunggu',
-      updated_at: new Date().toISOString()
+      updated_at: updatedAt
     }).eq('id', 1)
     fetchPertandingan()
   }
@@ -216,9 +208,7 @@ export default function Dewan() {
 
   async function hapusLog(logItem) {
     if (!confirm('Hapus input ini?')) return
-    // Hapus dari log
     await supabase.from('log_nilai').delete().eq('id', logItem.id)
-    // Kurangi dari nilai_tanding
     const kolom = logItem.jenis === 'bantingan' ? 'bantingan' : 'pelanggaran'
     const { data: existing } = await supabase
       .from('nilai_tanding')
@@ -236,7 +226,6 @@ export default function Dewan() {
     fetchLog()
   }
 
-  // Password screen
   if (!isAuthed) {
     return (
       <main className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center gap-4 p-6">
@@ -263,7 +252,6 @@ export default function Dewan() {
     )
   }
 
-  // ── Komponen Histori ──
   function HistoriSection({ peserta }) {
     const validasi = hitungValidasi(log.filter(l => l.peserta === peserta))
     const dewanLog = logDewan.filter(l => l.peserta === peserta)
@@ -291,7 +279,6 @@ export default function Dewan() {
           <span className="font-bold text-white text-sm">{emoji} {nama}</span>
         </div>
 
-        {/* Histori Juri */}
         {validasi.length === 0 ? (
           <p className="text-gray-400 text-xs mb-2">Belum ada input juri</p>
         ) : (
@@ -315,7 +302,6 @@ export default function Dewan() {
           </div>
         )}
 
-        {/* Histori Dewan */}
         {dewanLog.length > 0 && (
           <div className="space-y-1">
             <p className="text-gray-400 text-xs mb-1">Input Dewan:</p>
@@ -339,9 +325,6 @@ export default function Dewan() {
     )
   }
 
-  // ── UI States ──
-
-  // Pilih pertandingan
   if (!pilihan) return (
     <main className="min-h-screen bg-gray-900 text-white p-6">
       <div className="flex justify-between items-center mb-6">
@@ -372,7 +355,6 @@ export default function Dewan() {
 
   return (
     <main className="min-h-screen bg-gray-900 text-white p-4">
-      {/* Header */}
       <div className="flex justify-between items-center mb-3">
         <button onClick={mulaiLagi} className="text-gray-400 hover:text-white text-sm">← Ganti Partai</button>
         <div className="text-center">
@@ -388,7 +370,6 @@ export default function Dewan() {
 
       <p className="text-gray-400 text-center text-sm mb-3">{pilihan.kategori}</p>
 
-      {/* Ronde selector */}
       <div className="flex justify-center gap-3 mb-4">
         {[1, 2, 3].map(r => (
           <button key={r} onClick={() => gantiRonde(r)} disabled={statusSelesai}
@@ -398,7 +379,6 @@ export default function Dewan() {
         ))}
       </div>
 
-      {/* Input nilai — disabled kalau selesai */}
       {!statusSelesai && (
         <div className="grid grid-cols-2 gap-4 mb-5">
           {['merah', 'biru'].map(peserta => (
@@ -433,7 +413,6 @@ export default function Dewan() {
         </div>
       )}
 
-      {/* Histori */}
       <div className="bg-gray-800 rounded-xl p-4 mb-4">
         <h3 className="text-base font-bold text-yellow-400 mb-3">📋 Histori Ronde {ronde}</h3>
         <div className="grid grid-cols-2 gap-3">
@@ -442,7 +421,6 @@ export default function Dewan() {
         </div>
       </div>
 
-      {/* Akhiri pertandingan */}
       {!statusSelesai ? (
         <button onClick={akhiriPertandingan}
           className="w-full bg-gray-700 hover:bg-red-800 border border-gray-600 hover:border-red-600 py-3 rounded-xl font-bold text-gray-300 hover:text-white transition-all">
