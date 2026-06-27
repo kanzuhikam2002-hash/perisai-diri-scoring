@@ -2,24 +2,75 @@
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../supabase'
 
-function hitungSkorRonde(data, ronde) {
-  let merah = 0, biru = 0
-  data?.filter(d => d.ronde === ronde).forEach(d => {
-    const total = (d.tendangan || 0) + (d.pukulan || 0) + (d.bantingan || 0) + (d.pelanggaran || 0)
-    if (d.peserta === 'merah') merah += total
-    else biru += total
+const WINDOW_MS = 2000 // 2 detik window validasi — sama persis dengan logika di Dewan
+
+// Tentukan status sah/hangus/tidak_sah untuk tiap input JURI (bukan dewan).
+// Sah = 2+ juri input jenis yang sama dalam window 2 detik.
+function hitungValidasiJuri(logs) {
+  const hasil = []
+  const byRonde = {}
+  logs.forEach(l => {
+    if (l.juri === 0) return // skip input dewan, itu dihitung terpisah
+    const key = `${l.ronde}_${l.peserta}`
+    if (!byRonde[key]) byRonde[key] = []
+    byRonde[key].push(l)
   })
-  return { merah, biru }
+
+  Object.entries(byRonde).forEach(([key, entries]) => {
+    const sorted = [...entries].sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+    let i = 0
+    while (i < sorted.length) {
+      const base = new Date(sorted[i].created_at)
+      const grup = [sorted[i]]
+      let j = i + 1
+      while (j < sorted.length) {
+        const diff = new Date(sorted[j].created_at) - base
+        if (diff <= WINDOW_MS) {
+          grup.push(sorted[j])
+          j++
+        } else break
+      }
+      if (grup.length >= 2) {
+        const jenisSama = grup.every(g => g.jenis === grup[0].jenis)
+        const juriUnik = new Set(grup.map(g => g.juri)).size
+        const status = jenisSama && juriUnik >= 2 ? 'sah' : 'hangus'
+        grup.forEach(g => hasil.push({ ...g, status }))
+        i = j
+      } else {
+        hasil.push({ ...sorted[i], status: 'tidak_sah' })
+        i++
+      }
+    }
+  })
+
+  return hasil
 }
 
-function hitungSkorTotal(data) {
-  let merah = 0, biru = 0
-  data?.forEach(d => {
-    const total = (d.tendangan || 0) + (d.pukulan || 0) + (d.bantingan || 0) + (d.pelanggaran || 0)
-    if (d.peserta === 'merah') merah += total
-    else biru += total
+// Hitung skor per ronde dari log_nilai, hanya menjumlahkan:
+// - input JURI yang statusnya 'sah'
+// - SEMUA input DEWAN (bantingan/pelanggaran), karena dewan otoritas tunggal,
+//   tidak perlu validasi 2-juri
+function hitungSemuaSkor(logs) {
+  const perRonde = { 1: { merah: 0, biru: 0 }, 2: { merah: 0, biru: 0 }, 3: { merah: 0, biru: 0 } }
+
+  const validasiJuri = hitungValidasiJuri(logs)
+  validasiJuri.filter(l => l.status === 'sah').forEach(l => {
+    if (!perRonde[l.ronde]) perRonde[l.ronde] = { merah: 0, biru: 0 }
+    perRonde[l.ronde][l.peserta] += l.nilai
   })
-  return { merah, biru }
+
+  logs.filter(l => l.juri === 0).forEach(l => {
+    if (!perRonde[l.ronde]) perRonde[l.ronde] = { merah: 0, biru: 0 }
+    perRonde[l.ronde][l.peserta] += l.nilai
+  })
+
+  const total = { merah: 0, biru: 0 }
+  Object.values(perRonde).forEach(r => {
+    total.merah += r.merah
+    total.biru += r.biru
+  })
+
+  return { ...perRonde, total }
 }
 
 export default function TV() {
@@ -58,12 +109,12 @@ export default function TV() {
     return () => supabase.removeChannel(ch)
   }, [])
 
-  // Subscribe nilai_tanding — channel unik per pertandingan
+  // Subscribe log_nilai — channel unik per pertandingan
   useEffect(() => {
     if (!pertandingan) return
     fetchNilai()
     const ch = supabase.channel(`tv_nilai_${pertandingan.id}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'nilai_tanding' }, () => fetchNilai())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'log_nilai' }, () => fetchNilai())
       .subscribe()
     return () => supabase.removeChannel(ch)
   }, [pertandingan?.id])
@@ -115,9 +166,10 @@ export default function TV() {
     if (!pertandingan) return
     const pid = pertandingan.id
     const { data } = await supabase
-      .from('nilai_tanding')
+      .from('log_nilai')
       .select('*')
       .eq('pertandingan_id', pid)
+      .order('created_at', { ascending: true })
     // Buang hasil basi kalau pertandingan sudah berganti lagi sejak query dimulai
     if (pertandinganIdRef.current !== pid) return
     setNilaiData(data || [])
@@ -181,7 +233,7 @@ export default function TV() {
 
         {/* Hasil pertandingan terakhir */}
         {(() => {
-          const total = hitungSkorTotal(nilaiData)
+          const total = hitungSemuaSkor(nilaiData).total
           const menang = total.merah > total.biru ? 'merah' : total.biru > total.merah ? 'biru' : null
           return (
             <div className="bg-gray-900 mx-4 mt-4 rounded-2xl p-4 border border-gray-700">
@@ -258,10 +310,11 @@ export default function TV() {
 
   // ── Main Scoreboard ──
   const ronde = sesi?.ronde || 1
-  const total = hitungSkorTotal(nilaiData)
-  const r1 = hitungSkorRonde(nilaiData, 1)
-  const r2 = hitungSkorRonde(nilaiData, 2)
-  const r3 = hitungSkorRonde(nilaiData, 3)
+  const skor = hitungSemuaSkor(nilaiData)
+  const total = skor.total
+  const r1 = skor[1]
+  const r2 = skor[2]
+  const r3 = skor[3]
 
   return (
     <main className="min-h-screen bg-black text-white flex flex-col">
@@ -324,7 +377,7 @@ export default function TV() {
           {[{ r: 1, s: r1 }, { r: 2, s: r2 }, { r: 3, s: r3 }].map(({ r, s }) => (
             <div key={r}
               className={`rounded-xl p-2 text-center ${ronde === r ? 'bg-gray-700 border border-yellow-500' : 'bg-gray-800'}`}>
-              <p className={`text-xs font-bold mb-1 ${ronde === r ? 'text-yellow-400' : 'text-gray-400'}`}>
+              <p className={`text-xs font-bold mb-1 ${ronde === r ? 'text-yellow-300' : 'text-gray-400'}`}>
                 Babak {r} {ronde === r ? '▶' : ''}
               </p>
               <div className="flex justify-around items-center">
