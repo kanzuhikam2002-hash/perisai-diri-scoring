@@ -2,15 +2,13 @@
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../supabase'
 
-const WINDOW_MS = 2000 // 2 detik window validasi — sama persis dengan logika di Dewan
+const WINDOW_MS = 2000
 
-// Tentukan status sah/hangus/tidak_sah untuk tiap input JURI (bukan dewan).
-// Sah = 2+ juri input jenis yang sama dalam window 2 detik.
 function hitungValidasiJuri(logs) {
   const hasil = []
   const byRonde = {}
   logs.forEach(l => {
-    if (l.juri === 0) return // skip input dewan, itu dihitung terpisah
+    if (l.juri === 0) return
     const key = `${l.ronde}_${l.peserta}`
     if (!byRonde[key]) byRonde[key] = []
     byRonde[key].push(l)
@@ -25,10 +23,7 @@ function hitungValidasiJuri(logs) {
       let j = i + 1
       while (j < sorted.length) {
         const diff = new Date(sorted[j].created_at) - base
-        if (diff <= WINDOW_MS) {
-          grup.push(sorted[j])
-          j++
-        } else break
+        if (diff <= WINDOW_MS) { grup.push(sorted[j]); j++ } else break
       }
       if (grup.length >= 2) {
         const jenisSama = grup.every(g => g.jenis === grup[0].jenis)
@@ -42,14 +37,9 @@ function hitungValidasiJuri(logs) {
       }
     }
   })
-
   return hasil
 }
 
-// Hitung skor per ronde dari log_nilai, hanya menjumlahkan:
-// - input JURI yang statusnya 'sah'
-// - SEMUA input DEWAN (bantingan/pelanggaran), karena dewan otoritas tunggal,
-//   tidak perlu validasi 2-juri
 function hitungSemuaSkor(logs) {
   const perRonde = { 1: { merah: 0, biru: 0 }, 2: { merah: 0, biru: 0 }, 3: { merah: 0, biru: 0 } }
 
@@ -65,12 +55,16 @@ function hitungSemuaSkor(logs) {
   })
 
   const total = { merah: 0, biru: 0 }
-  Object.values(perRonde).forEach(r => {
-    total.merah += r.merah
-    total.biru += r.biru
-  })
+  Object.values(perRonde).forEach(r => { total.merah += r.merah; total.biru += r.biru })
 
   return { ...perRonde, total }
+}
+
+// Ambil log Dewan per peserta per ronde, urutkan terbaru di atas
+function getDewanLog(logs, peserta, ronde) {
+  return logs
+    .filter(l => l.juri === 0 && l.peserta === peserta && l.ronde === ronde)
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
 }
 
 export default function TV() {
@@ -81,13 +75,9 @@ export default function TV() {
   const [bracketMatches, setBracketMatches] = useState([])
   const [ping, setPing] = useState(null)
 
-  // Ref ini selalu sinkron dengan pertandingan_id TERBARU dari sesi_aktif.
-  // Dipakai untuk membuang hasil fetch yang datang "basi" (telat),
-  // supaya data lama tidak menimpa data baru saat Dewan ganti partai cepat.
   const pertandinganIdRef = useRef(null)
   const seqRef = useRef(0)
 
-  // Ping
   useEffect(() => {
     const interval = setInterval(async () => {
       const t = Date.now()
@@ -97,8 +87,6 @@ export default function TV() {
     return () => clearInterval(interval)
   }, [])
 
-  // Subscribe sesi_aktif — pakai payload langsung, bukan re-fetch,
-  // supaya urutan event selalu sesuai urutan commit di database
   useEffect(() => {
     fetchSesiAwal()
     const ch = supabase.channel('tv_sesi')
@@ -109,7 +97,6 @@ export default function TV() {
     return () => supabase.removeChannel(ch)
   }, [])
 
-  // Subscribe log_nilai — channel unik per pertandingan
   useEffect(() => {
     if (!pertandingan) return
     fetchNilai()
@@ -119,7 +106,6 @@ export default function TV() {
     return () => supabase.removeChannel(ch)
   }, [pertandingan?.id])
 
-  // Subscribe bracket_match — channel unik per bracket
   useEffect(() => {
     if (!bracket) return
     fetchBracketMatches()
@@ -134,9 +120,6 @@ export default function TV() {
     await applySesi(s)
   }
 
-  // Dipanggil setiap kali ada perubahan sesi_aktif (dari realtime payload ATAU fetch awal).
-  // Sequence guard: kalau ada applySesi() lain yang lebih baru sudah mulai
-  // berjalan sebelum query pertandingan/bracket ini selesai, hasil ini dibuang.
   async function applySesi(s) {
     const mySeq = ++seqRef.current
     pertandinganIdRef.current = s?.pertandingan_id ?? null
@@ -150,7 +133,7 @@ export default function TV() {
     }
 
     const { data: p } = await supabase.from('pertandingan').select('*').eq('id', s.pertandingan_id).single()
-    if (mySeq !== seqRef.current) return // ada update lebih baru, buang hasil ini
+    if (mySeq !== seqRef.current) return
     setPertandingan(p || null)
 
     if (s.status === 'selesai' && p?.kategori) {
@@ -170,7 +153,6 @@ export default function TV() {
       .select('*')
       .eq('pertandingan_id', pid)
       .order('created_at', { ascending: true })
-    // Buang hasil basi kalau pertandingan sudah berganti lagi sejak query dimulai
     if (pertandinganIdRef.current !== pid) return
     setNilaiData(data || [])
   }
@@ -202,28 +184,17 @@ export default function TV() {
 
   // ── Selesai: tampil bagan ──
   if (sesi?.status === 'selesai') {
-    const babakLabel = {
-      1: 'Babak 1',
-      2: 'Perempat Final',
-      3: 'Semifinal',
-      4: 'Final',
-      5: 'Perebutan Juara 3'
-    }
-
-    const maxBabak = bracketMatches.length > 0 ? Math.max(...bracketMatches.map(m => m.babak)) : 1
+    const babakLabel = { 1: 'Babak 1', 2: 'Perempat Final', 3: 'Semifinal', 4: 'Final', 5: 'Perebutan Juara 3' }
     const babakList = [...new Set(bracketMatches.map(m => m.babak))].sort((a, b) => a - b)
 
     return (
       <main className="min-h-screen bg-gray-950 text-white flex flex-col overflow-auto">
-        {/* Header */}
         <div className="bg-gray-900 py-4 px-6 flex justify-between items-center border-b border-gray-800">
           <div>
             <h1 className="text-2xl font-bold text-yellow-400">⚔️ PERISAI DIRI</h1>
             <p className="text-gray-400 text-sm">{pertandingan.kategori}</p>
           </div>
-          <div className="text-center">
-            <span className="bg-green-800 text-green-300 px-3 py-1 rounded-full text-sm font-bold">🏁 Selesai</span>
-          </div>
+          <span className="bg-green-800 text-green-300 px-3 py-1 rounded-full text-sm font-bold">🏁 Selesai</span>
           {ping !== null && (
             <span className={`text-xs px-2 py-1 rounded-full font-mono ${ping < 100 ? 'bg-green-900 text-green-300' : ping < 300 ? 'bg-yellow-900 text-yellow-300' : 'bg-red-900 text-red-300'}`}>
               📶 {ping}ms
@@ -231,7 +202,6 @@ export default function TV() {
           )}
         </div>
 
-        {/* Hasil pertandingan terakhir */}
         {(() => {
           const total = hitungSemuaSkor(nilaiData).total
           const menang = total.merah > total.biru ? 'merah' : total.biru > total.merah ? 'biru' : null
@@ -258,7 +228,6 @@ export default function TV() {
           )
         })()}
 
-        {/* Bagan */}
         {bracket && bracketMatches.length > 0 ? (
           <div className="p-4 overflow-x-auto">
             <p className="text-center text-gray-400 text-xs mb-4 tracking-widest uppercase">Bagan {pertandingan.kategori}</p>
@@ -269,26 +238,19 @@ export default function TV() {
                     {babakLabel[babak] || `Babak ${babak}`}
                   </p>
                   {bracketMatches.filter(m => m.babak === babak).map(match => (
-                    <div key={match.id}
-                      className="bg-gray-800 border border-gray-700 rounded-xl p-3 w-52 text-sm">
+                    <div key={match.id} className="bg-gray-800 border border-gray-700 rounded-xl p-3 w-52 text-sm">
                       {match.is_bye ? (
                         <div className="text-center text-gray-500 py-2">BYE</div>
                       ) : (
                         <>
-                          <div className={`flex items-center gap-2 px-2 py-1.5 rounded-lg mb-1
-                            ${match.pemenang === 'merah' ? 'bg-red-700' : 'bg-gray-700'}`}>
+                          <div className={`flex items-center gap-2 px-2 py-1.5 rounded-lg mb-1 ${match.pemenang === 'merah' ? 'bg-red-700' : 'bg-gray-700'}`}>
                             <span className="text-xs">🔴</span>
-                            <span className={`font-bold text-xs flex-1 truncate ${match.pemenang === 'merah' ? 'text-white' : 'text-gray-300'}`}>
-                              {match.peserta_merah || '—'}
-                            </span>
+                            <span className={`font-bold text-xs flex-1 truncate ${match.pemenang === 'merah' ? 'text-white' : 'text-gray-300'}`}>{match.peserta_merah || '—'}</span>
                             {match.pemenang === 'merah' && <span className="text-yellow-400 text-xs">🏆</span>}
                           </div>
-                          <div className={`flex items-center gap-2 px-2 py-1.5 rounded-lg
-                            ${match.pemenang === 'biru' ? 'bg-blue-700' : 'bg-gray-700'}`}>
+                          <div className={`flex items-center gap-2 px-2 py-1.5 rounded-lg ${match.pemenang === 'biru' ? 'bg-blue-700' : 'bg-gray-700'}`}>
                             <span className="text-xs">🔵</span>
-                            <span className={`font-bold text-xs flex-1 truncate ${match.pemenang === 'biru' ? 'text-white' : 'text-gray-300'}`}>
-                              {match.peserta_biru || '—'}
-                            </span>
+                            <span className={`font-bold text-xs flex-1 truncate ${match.pemenang === 'biru' ? 'text-white' : 'text-gray-300'}`}>{match.peserta_biru || '—'}</span>
                             {match.pemenang === 'biru' && <span className="text-yellow-400 text-xs">🏆</span>}
                           </div>
                         </>
@@ -316,6 +278,15 @@ export default function TV() {
   const r2 = skor[2]
   const r3 = skor[3]
 
+  const labelJenis = {
+    bantingan: '🤸 Bantingan',
+    pelanggaran: '⚠️ Pelanggaran'
+  }
+
+  const dewanMerah = getDewanLog(nilaiData, 'merah', ronde)
+  const dewanBiru = getDewanLog(nilaiData, 'biru', ronde)
+  const adaDewan = dewanMerah.length > 0 || dewanBiru.length > 0
+
   return (
     <main className="min-h-screen bg-black text-white flex flex-col">
       {/* Header */}
@@ -325,11 +296,7 @@ export default function TV() {
             <h1 className="text-xl font-black text-yellow-400 tracking-widest">⚔️ PERISAI DIRI</h1>
             <p className="text-gray-400 text-xs">{pertandingan.kategori}</p>
           </div>
-          <div className="text-center">
-            <span className="bg-yellow-500 text-black px-4 py-1 rounded-full font-black text-sm">
-              RONDE {ronde}
-            </span>
-          </div>
+          <span className="bg-yellow-500 text-black px-4 py-1 rounded-full font-black text-sm">RONDE {ronde}</span>
           {ping !== null && (
             <span className={`text-xs px-2 py-1 rounded-full font-mono ${ping < 100 ? 'bg-green-900 text-green-300' : ping < 300 ? 'bg-yellow-900 text-yellow-300' : 'bg-red-900 text-red-300'}`}>
               📶 {ping}ms
@@ -345,26 +312,20 @@ export default function TV() {
           <div className="bg-red-700 px-5 py-2.5 rounded-2xl text-center">
             <p className="text-xs text-red-200 tracking-widest uppercase mb-0.5">Sudut Merah</p>
             <p className="text-2xl font-extrabold text-white">🔴 {pertandingan.peserta_merah}</p>
-            {pertandingan.kontingen_merah && (
-              <p className="text-red-200 text-xs mt-0.5">{pertandingan.kontingen_merah}</p>
-            )}
+            {pertandingan.kontingen_merah && <p className="text-red-200 text-xs mt-0.5">{pertandingan.kontingen_merah}</p>}
           </div>
           <p className="text-8xl font-black text-white leading-none">{total.merah}</p>
           <p className="text-red-400 text-xs tracking-widest">TOTAL</p>
         </div>
 
-        {/* Divider */}
-        <div className="w-0.5 bg-yellow-500 flex flex-col items-center justify-center gap-1 py-4">
-        </div>
+        <div className="w-0.5 bg-yellow-500" />
 
         {/* Biru */}
         <div className="flex-1 bg-blue-950 flex flex-col items-center justify-center gap-3">
           <div className="bg-blue-700 px-5 py-2.5 rounded-2xl text-center">
             <p className="text-xs text-blue-200 tracking-widest uppercase mb-0.5">Sudut Biru</p>
             <p className="text-2xl font-extrabold text-white">🔵 {pertandingan.peserta_biru}</p>
-            {pertandingan.kontingen_biru && (
-              <p className="text-blue-200 text-xs mt-0.5">{pertandingan.kontingen_biru}</p>
-            )}
+            {pertandingan.kontingen_biru && <p className="text-blue-200 text-xs mt-0.5">{pertandingan.kontingen_biru}</p>}
           </div>
           <p className="text-8xl font-black text-white leading-none">{total.biru}</p>
           <p className="text-blue-400 text-xs tracking-widest">TOTAL</p>
@@ -375,8 +336,7 @@ export default function TV() {
       <div className="bg-gray-900 border-t border-gray-800 px-4 py-3">
         <div className="grid grid-cols-3 gap-2">
           {[{ r: 1, s: r1 }, { r: 2, s: r2 }, { r: 3, s: r3 }].map(({ r, s }) => (
-            <div key={r}
-              className={`rounded-xl p-2 text-center ${ronde === r ? 'bg-gray-700 border border-yellow-500' : 'bg-gray-800'}`}>
+            <div key={r} className={`rounded-xl p-2 text-center ${ronde === r ? 'bg-gray-700 border border-yellow-500' : 'bg-gray-800'}`}>
               <p className={`text-xs font-bold mb-1 ${ronde === r ? 'text-yellow-300' : 'text-gray-400'}`}>
                 Babak {r} {ronde === r ? '▶' : ''}
               </p>
@@ -389,6 +349,52 @@ export default function TV() {
           ))}
         </div>
       </div>
+
+      {/* Histori Input Dewan — hanya tampil kalau ada */}
+      {adaDewan && (
+        <div className="bg-gray-950 border-t border-gray-800 px-4 py-3">
+          <p className="text-xs text-orange-400 font-bold tracking-widest uppercase mb-2">⚖️ Input Dewan — Ronde {ronde}</p>
+          <div className="grid grid-cols-2 gap-3">
+            {/* Sudut Merah */}
+            <div className="bg-red-950 border border-red-800 rounded-xl p-2">
+              <p className="text-xs font-bold text-red-300 mb-1">🔴 {pertandingan.peserta_merah}</p>
+              {dewanMerah.length === 0 ? (
+                <p className="text-gray-600 text-xs">—</p>
+              ) : (
+                <div className="space-y-1">
+                  {dewanMerah.map(l => (
+                    <div key={l.id} className="flex justify-between items-center text-xs bg-gray-800 bg-opacity-60 rounded-lg px-2 py-1">
+                      <span className="text-gray-300">{labelJenis[l.jenis] || l.jenis}</span>
+                      <span className={`font-bold ${l.nilai > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {l.nilai > 0 ? `+${l.nilai}` : l.nilai}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Sudut Biru */}
+            <div className="bg-blue-950 border border-blue-800 rounded-xl p-2">
+              <p className="text-xs font-bold text-blue-300 mb-1">🔵 {pertandingan.peserta_biru}</p>
+              {dewanBiru.length === 0 ? (
+                <p className="text-gray-600 text-xs">—</p>
+              ) : (
+                <div className="space-y-1">
+                  {dewanBiru.map(l => (
+                    <div key={l.id} className="flex justify-between items-center text-xs bg-gray-800 bg-opacity-60 rounded-lg px-2 py-1">
+                      <span className="text-gray-300">{labelJenis[l.jenis] || l.jenis}</span>
+                      <span className={`font-bold ${l.nilai > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {l.nilai > 0 ? `+${l.nilai}` : l.nilai}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   )
 }
